@@ -17,63 +17,105 @@
 
 open Lwt.Infix
 
+let get =
+  let re = Re.(compile (str "\r\n")) in
+  fun header s ->
+    let header = String.lowercase_ascii header in
+    let l = Re.split re s in
+    let l =
+      List.map (fun s ->
+          match String.index s ':' with
+          | i ->
+              String.lowercase_ascii (String.trim (String.sub s 0 i)),
+              String.trim (String.sub s (i+1) (String.length s - (i+1)))
+          | exception Not_found ->
+              String.trim s, ""
+        ) l
+    in
+    List.assoc_opt header l
+
+module M = Map.Make (struct type t = int32 let compare = Int32.compare end)
+
 let wait_mail server ?port username password mailbox =
   Imap.connect server ?port username password ~read_only:true mailbox >>= fun imap ->
-  let rec loop () =
-    let uidnext =
-      match Imap.uidnext imap with
-      | Some n -> n
-      | None -> failwith "Could not determine UIDNEXT"
-    in
-    Imap.poll imap >>= fun () ->
-    Imap.uid_search imap Imap.Search.(unseen && uid [uidnext]) >>= function
-    | (n :: _), _ ->
-        Lwt_stream.to_list (Imap.uid_fetch imap [n] [Imap.Fetch.Request.envelope]) >>= begin function
-        | [_, {envelope = Some {Imap.Envelope.env_from = {Imap.Envelope.Address.ad_name; ad_mailbox; ad_host; _} :: _; _}; _}; _] ->
-            Lwt_io.printlf "New mail! (from \"%s\" <%s@%s>)" ad_name ad_mailbox ad_host >>= fun () ->
-            Imap.disconnect imap
-        | _ ->
-            loop ()
-        end
-    | [], _ ->
-        loop ()
+  Imap.uid_search imap Imap.Search.all >>= fun (uids, _) ->
+  (* Lwt_list.iter_s (fun uid -> Lwt_io.printlf "%ld" uid) lst >>= fun () -> *)
+  let strm =
+    let mime = Imap.MIME.Section.HEADER_FIELDS ["Message-Id"] in
+    Imap.uid_fetch imap uids
+      [
+        Imap.Fetch.Request.body_section ~peek:true ~section:([], Some mime) ();
+        Imap.Fetch.Request.rfc822_size;
+        Imap.Fetch.Request.internaldate;
+        Imap.Fetch.Request.flags;
+      ]
   in
-  loop ()
-
-let wait_mail server port username password mailbox =
-  Lwt_main.run (wait_mail server ?port username password mailbox)
-
-open Cmdliner
-
-let server =
-  let doc = Arg.info ~docv:"SERVER" ~doc:"Server hostname" [] in
-  Arg.(required & pos 0 (some string) None & doc)
-
-let port =
-  let doc = Arg.info ~docv:"PORT" ~doc:"Server port" ["port"; "p"] in
-  Arg.(value & opt (some int) None & doc)
-
-let username =
-  let doc = Arg.info ~docv:"USERNAME" ~doc:"Username" [] in
-  Arg.(required & pos 1 (some string) None & doc)
-
-let password =
-  let doc = Arg.info ~docv:"PASSWORD" ~doc:"Password" [] in
-  Arg.(required & pos 2 (some string) None & doc)
-
-let mailbox =
-  let doc = Arg.info ~docv:"MAILBOX" ~doc:"Mailbox to watch" [] in
-  Arg.(required & pos 3 (some string) None & doc)
-
-(* let debug = *)
-(*   let doc = Arg.info ~doc:"Show debug info" ["debug"; "d"] in *)
-(*   Arg.(value & flag doc) *)
-
-let main =
-  Term.(pure wait_mail $ server $ port $ username $ password $ mailbox),
-  Term.info "wait_mail"
+  Lwt_stream.fold_s (fun ((seq : Imap.seq), resp) map ->
+      match resp with
+      | {Imap.Fetch.Response.body_section = ([] | [_, ""])} ->
+          Lwt_io.printlf "missing data for seq %ld" (seq :> int32) >>= fun () ->
+          Lwt.return map
+      | {Imap.Fetch.Response.body_section = [_, s];
+         uid;
+         rfc822_size = Some size;
+         internaldate = Some (d, t);
+         flags} ->
+          Lwt_io.printl  "---------------------------------------------------" >>= fun () ->
+          Lwt_io.printlf "          Seq: %ld" (seq :> int32) >>= fun () ->
+          Lwt_io.printlf "          UID: %ld" uid >>= fun () ->
+          Lwt_io.printlf "   Message-Id: %s"
+            (match get "Message-Id" s with None -> "<none>" | Some s -> s) >>= fun () ->
+          Lwt_io.printlf "         Size: %d" size >>= fun () ->
+          Lwt_io.printlf "Internal Date: %s %s"
+            (Imap.Fetch.Date.to_string d) (Imap.Fetch.Time.to_string t) >>= fun () ->
+          Lwt_io.printlf "        Flags: %s"
+            (String.concat ", " (List.map Imap.Flag.to_string flags)) >>= fun () ->
+          let sign =
+            match get "Message-Id" s with
+            | None -> String.concat "\000" [Printf.sprintf "%s %s" (Imap.Fetch.Date.to_string d) (Imap.Fetch.Time.to_string t); string_of_int size]
+            | Some mid -> mid
+          in
+          let digest = Digest.to_hex (Digest.string sign) in
+          Lwt.return (M.add uid digest map)
+      | _ ->
+          Lwt_io.printlf "missing data for seq %ld" (seq :> int32) >>= fun () ->
+          Lwt.return map
+    ) strm M.empty
+  >>= fun map ->
+  let strm = Imap.uid_fetch imap uids [Imap.Fetch.Request.rfc822] in
+  Lwt_stream.iter_s (fun (seq, {Imap.Fetch.Response.uid; rfc822; _}) ->
+      let digest = M.find uid map in
+      Lwt_io.open_file ~mode:Lwt_io.output (Filename.concat "tmp" digest) >>= fun oc ->
+      Lwt_io.fprint oc rfc822 >>= fun () ->
+      Lwt_io.close oc >>= fun () ->
+      Lwt_io.printlf "Message %s saved." digest
+    ) strm
+  >>= fun () ->
+  Imap.disconnect imap
+  (* let rec loop () =
+   *   let uidnext =
+   *     match Imap.uidnext imap with
+   *     | Some n -> n
+   *     | None -> failwith "Could not determine UIDNEXT"
+   *   in
+   *   Imap.poll imap >>= fun () ->
+   *   Imap.uid_search imap Imap.Search.(unseen && uid [uidnext]) >>= function
+   *   | (n :: _), _ ->
+   *       Lwt_stream.to_list (Imap.uid_fetch imap [n] [Imap.Fetch.Request.envelope]) >>= begin function
+   *       | [_, {envelope = Some {Imap.Envelope.env_from = {Imap.Envelope.Address.ad_name; ad_mailbox; ad_host; _} :: _; _}; _}; _] ->
+   *           Lwt_io.printlf "New mail! (from \"%s\" <%s@%s>)" ad_name ad_mailbox ad_host >>= fun () ->
+   *           Imap.disconnect imap
+   *       | _ ->
+   *           loop ()
+   *       end
+   *   | [], _ ->
+   *       loop ()
+   * in
+   * loop () *)
 
 let () =
-  match Term.eval ~catch:true main with
-  | `Ok _ | `Version | `Help -> ()
-  | `Error _ -> exit 1
+  let server = "imap.gmail.com" in
+  let username = "n.oje.bar@gmail.com" in
+  let password = "1983.Urmi.Nico" in
+  let mailbox = "INBOX" in
+  Lwt_main.run (wait_mail server username password mailbox)
