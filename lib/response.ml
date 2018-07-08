@@ -40,7 +40,7 @@ module Code = struct
     | HIGHESTMODSEQ of int64
     | NOMODSEQ
     | MODIFIED of (int32 * int32) list
-    | APPENDUID of int32 * int32
+    | APPENDUID of (int32 * int32)
     | COPYUID of int32 * (int32 * int32) list * (int32 * int32) list
     | UIDNOTSTICKY
     | COMPRESSIONACTIVE
@@ -49,14 +49,14 @@ end
 
 module State = struct
   type t =
-    | OK of Code.t option * string
-    | NO of Code.t option * string
-    | BAD of Code.t option * string [@@deriving sexp]
+    | OK
+    | NO
+    | BAD [@@deriving sexp]
 end
 
 module Untagged = struct
   type t =
-    | State of State.t
+    | State of State.t * (Code.t option * string)
     | BYE of Code.t option * string
     | PREAUTH of Code.t option * string
     | FLAGS of Flag.t list
@@ -77,4 +77,4 @@ end
 type t =
   | Untagged of Untagged.t
   | Cont of string
-  | Tagged of string * State.t [@@deriving sexp]
+  | Tagged of string * (State.t * (Code.t option * string)) [@@deriving sexp]
