@@ -52,14 +52,14 @@ let wait_mail server ?port username password mailbox =
   in
   Lwt_stream.fold_s (fun ((seq : Imap.seq), resp) map ->
       match resp with
-      | {Imap.Fetch.Response.body_section = ([] | [_, ""])} ->
+      | {Imap.Fetch.Response.body_section = ([] | [_, ""]); _} ->
           Lwt_io.printlf "missing data for seq %ld" (seq :> int32) >>= fun () ->
           Lwt.return map
       | {Imap.Fetch.Response.body_section = [_, s];
          uid;
          rfc822_size = Some size;
          internaldate = Some (d, t);
-         flags} ->
+         flags; _} ->
           Lwt_io.printl  "---------------------------------------------------" >>= fun () ->
           Lwt_io.printlf "          Seq: %ld" (seq :> int32) >>= fun () ->
           Lwt_io.printlf "          UID: %ld" uid >>= fun () ->
@@ -83,7 +83,7 @@ let wait_mail server ?port username password mailbox =
     ) strm M.empty
   >>= fun map ->
   let strm = Imap.uid_fetch imap uids [Imap.Fetch.Request.rfc822] in
-  Lwt_stream.iter_s (fun (seq, {Imap.Fetch.Response.uid; rfc822; _}) ->
+  Lwt_stream.iter_s (fun (_seq, {Imap.Fetch.Response.uid; rfc822; _}) ->
       let digest = M.find uid map in
       Lwt_io.open_file ~mode:Lwt_io.output (Filename.concat "tmp" digest) >>= fun oc ->
       Lwt_io.fprint oc rfc822 >>= fun () ->
