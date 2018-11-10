@@ -78,7 +78,7 @@ let rec use ?examine ({account = {host; port; username; password}; mailbox} as s
       ) conns
   with
   | exception Found c ->
-      Printf.eprintf "[Reusing connection to %s]\n%!" host;
+      (* Printf.eprintf "[Reusing connection to %s]\n%!" host; *)
       wrap f c
   | () ->
       begin match
@@ -91,13 +91,13 @@ let rec use ?examine ({account = {host; port; username; password}; mailbox} as s
           ) conns
       with
       | exception Found c ->
-          Printf.eprintf "[Reusing connection to %s]\n%!" host;
+          (* Printf.eprintf "[Reusing connection to %s]\n%!" host; *)
           (if examine = Some true then Core.examine else Core.select) c.c mailbox >>= fun () ->
           wrap f c
       | () ->
           let t = Lwt_condition.wait waiters >>= fun () -> use ?examine state f in
           if H.length conns < !max_conns then begin
-            Printf.eprintf "[Starting new connection to %s]\n%!" host;
+            (* Printf.eprintf "[Starting new connection to %s]\n%!" host; *)
             Lwt.on_any (Core.connect ~host ~port ~username ~password)
               (fun c -> H.add conns {c; s = CONNECTED} (); Lwt_condition.signal waiters ())
               (fun _ -> decr max_conns) (* MAYBE try connecting again? *)

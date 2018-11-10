@@ -71,13 +71,13 @@ let create_connection sock =
 let tag {tag; _} =
   Printf.sprintf "%04d" tag
 
-let parse {id; ic; _} =
+let parse {ic; _} =
   let get_line k =
-    let k s = Printf.eprintf "{%03d} > %s\n%!" id s; k s in
+    (* let k s = Printf.eprintf "{%03d} > %s\n%!" id s; k s in *)
     Lwt.on_success (Lwt_io.read_line ic) k
   in
   let get_exactly n k =
-    let k s = Printf.eprintf "{%03d} > [%d bytes]\n%!" id (String.length s); k s in
+    (* let k s = Printf.eprintf "{%03d} > [%d bytes]\n%!" id (String.length s); k s in *)
     let b = Bytes.create n in
     Lwt.on_success (Lwt_io.read_into_exactly ic b 0 n) (fun () -> k (Bytes.unsafe_to_string b))
   in
@@ -116,7 +116,7 @@ let rec send imap r process =
 
 let send imap r process =
   let r = r Encoder.End in
-  Printf.eprintf "%s\n%!" (Sexplib.Sexp.to_string_hum (Encoder.sexp_of_s r));
+  (* Printf.eprintf "%s\n%!" (Sexplib.Sexp.to_string_hum (Encoder.sexp_of_s r)); *)
   send imap r process >>= fun () ->
   Lwt_io.flush imap.oc
 

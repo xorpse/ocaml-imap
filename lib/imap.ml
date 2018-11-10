@@ -20,4 +20,8 @@
    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
    SOFTWARE. *)
 
-include Filter
+module OO = Filter
+module Search = Search
+module Fetch = Fetch
+
+include Core
