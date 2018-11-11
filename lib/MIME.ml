@@ -46,12 +46,12 @@ module Request = struct
     | MIME -> raw "MIME"
 
   let encode (nl, sec) =
-    let sec = match sec with None -> empty | Some sec -> section_msgtext sec in
+    let sec = match sec with None -> empty | Some sec -> raw "." & section_msgtext sec in
     match nl with
     | [] ->
         sec
     | _ :: _ ->
-        list ~sep:'.' int nl & raw "." & sec
+        list ~sep:'.' int nl & sec
 
   let header ?(part = []) () = part, Some HEADER
   let header_fields ?(part = []) l = part, Some (HEADER_FIELDS l)

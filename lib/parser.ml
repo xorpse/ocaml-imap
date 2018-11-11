@@ -160,6 +160,12 @@ let is_atom_char = function
 let atom =
   take_while1 is_atom_char
 
+let cmd =
+  take_while1 @@ function
+    | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '.' -> true
+    | _ -> false
+
+
 (*
    quoted          = DQUOTE *QUOTED-CHAR DQUOTE
 
@@ -275,6 +281,8 @@ let nstring =
       imap_string
   | _ ->
       char 'N' *> char 'I' *> char 'L' *> return ""
+
+let lift_nstring s = if s = "" then None else Some s
 
 (*
    TEXT-CHAR       = <any CHAR except CR and LF>
@@ -1084,8 +1092,50 @@ let date_time =
    section         = "[" [section-spec] "]"
 *)
 
-let _section =
-  error (* TODO *)
+
+let header_fld_name = astring
+
+let header_list = plist astring
+
+let section_msgtext tok =
+  let open MIME.Section in
+  match tok with
+  | "HEADER" -> return HEADER
+  | "HEADER.FIELDS" -> char ' ' *> header_list >|= fun l -> HEADER_FIELDS l
+  | "HEADER.FIELDS.NOT" -> char ' ' *> header_list >|= fun l -> HEADER_FIELDS_NOT l
+  | "TEXT" -> return TEXT
+  | _ -> error
+
+let period_list p =
+  let rec loop acc =
+    curr >>= function
+    | '.' ->
+        next *> p >>= fun x -> loop (x :: acc)
+    | _ ->
+        return (List.rev acc)
+  in loop []
+
+let section_part =
+  nz_number >>= fun n -> period_list nz_number >|= fun l -> n :: l
+
+let section_text =
+  let open MIME.Section in
+  atom >>= function
+  | "MIME" -> return MIME
+  | tok -> section_msgtext tok
+
+let section_spec = curr >>= function
+  | '1'..'9' -> section_part >>= fun p -> curr >>= begin function
+    | '.' -> next *> section_text >|= fun m -> (p, Some m)
+    | _ -> return (p, None)
+  end
+  | _ -> atom >>= section_msgtext >|= fun m -> ([], Some m)
+
+let section =
+  let open MIME.Section in
+  char '[' *> curr >>= function
+  | ']' -> next *> return ([], None)
+  | _ -> section_spec >>= fun s -> char ']' *> return s
 
 (*
    msg-att-static  = "ENVELOPE" SP envelope / "INTERNALDATE" SP date-time /
@@ -1127,7 +1177,7 @@ let permsg_modsequence =
 
 let msg_att =
   let open Fetch.MessageAttribute in
-  atom >>= function
+  cmd >>= function
   | "FLAGS" ->
       char ' ' *> plist flag_fetch >|= fun l -> FLAGS l
   | "MODSEQ" ->
@@ -1153,12 +1203,18 @@ let msg_att =
       char ' ' *> nstring >|= fun s -> RFC822 s
   | "BODYSTRUCTURE" ->
       char ' ' *> body >|= (fun b -> BODYSTRUCTURE b)
-  (* | "BODY" ->
-   *     let section =
-   *       section >>= fun s -> sp *> nstring >>| fun x ->
-   *       BODY_SECTION (s, x)
-   *     in
-   *     choice [sp *> body >>| (fun b -> BODY b); section] *)
+  | "BODY" -> curr >>= begin function
+    | '[' -> section >>= fun (sn, m) ->
+        let s = (List.map Int32.to_int sn, m) in
+        curr >>= begin function
+        | '<' -> next *> number >>= fun _n -> char '>' *> char ' ' *> nstring >|= fun x ->
+            BODY_SECTION (s, lift_nstring x)
+        | ' ' -> next *> nstring >|= fun x ->
+            BODY_SECTION (s, lift_nstring x)
+        | _ -> error
+        end
+    | _ -> char ' ' *> body >|= fun b -> BODY b
+    end
   | "UID" ->
       char ' ' *> uniqueid >|= fun n -> UID n
   | "X-GM-MSGID" ->
